@@ -155,10 +155,11 @@
  */
 
 //usage:#define inetd_trivial_usage
-//usage:       "[-fe] [-q N] [-R N] [CONFFILE]"
+//usage:       "[-fe] [-q N] [-R N] [-i dev] [CONFFILE]"
 //usage:#define inetd_full_usage "\n\n"
 //usage:       "Listen for network connections and launch programs\n"
 //usage:     "\n	-f	Run in foreground"
+//usage:     "\n	-i dev	Device to bind it to"
 //usage:     "\n	-e	Log to stderr"
 //usage:     "\n	-q N	Socket listen queue (default: 128)"
 //usage:     "\n	-R N	Pause services after N connects/min"
@@ -215,6 +216,7 @@ typedef struct servtab_t {
 	int se_fd;                            /* open descriptor */
 	/* NB: 'biggest fields last' saves on code size (~250 bytes) */
 	/* [addr:]service socktype proto wait user[:group] prog [args] */
+	char *se_interface;                   /* interface to listen on (optional) */
 	char *se_local_hostname;              /* addr to listen on */
 	char *se_service;                     /* "80" or "www" or "mount/2[-3]" */
 	/* socktype is in se_socktype */      /* "stream" "dgram" "raw" "rdm" "seqpacket" */
@@ -318,6 +320,7 @@ struct globals {
 	const char *config_filename;
 	parser_t *parser;
 	char *default_local_hostname;
+	char *interface;
 #if ENABLE_FEATURE_INETD_SUPPORT_BUILTIN_CHARGEN
 	char *end_ring;
 	char *ring_pos;
@@ -344,6 +347,7 @@ struct BUG_G_too_big {
 #define config_filename (G.config_filename)
 #define parser          (G.parser         )
 #define default_local_hostname (G.default_local_hostname)
+#define interface       (G.interface      )
 #define first_ps_byte   (G.first_ps_byte  )
 #define last_ps_byte    (G.last_ps_byte   )
 #define end_ring        (G.end_ring       )
@@ -529,6 +533,23 @@ static void prepare_socket_fd(servtab_t *sep)
 	}
 	setsockopt_reuseaddr(fd);
 
+	char * bind_to_device = sep->se_interface ? sep->se_interface : interface;
+	
+	if ( bind_to_device ) {
+		//The complete but useless structure is:
+		//#include <linux/if.h>
+		//struct ifreq ifr = {};
+		//snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), bind_to_device);
+		if ( setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, bind_to_device , strlen(bind_to_device)+1 ) ) {
+			printf( "%s:%s:%d : Could not set the %s interface for %s:%s\n", __FILE__, __FUNCTION__, __LINE__, bind_to_device, sep->se_local_hostname, sep->se_service);
+			perror("Error");
+		}
+//		else {
+//			printf( "%s:%s:%d : OK with %s on %s:%s\n", __FILE__, __FUNCTION__, __LINE__, bind_to_device, sep->se_local_hostname, sep->se_service);
+//		}
+	}
+
+
 #if ENABLE_FEATURE_INETD_RPC
 	if (is_rpc_service(sep)) {
 		struct passwd *pwd;
@@ -577,7 +598,7 @@ static void prepare_socket_fd(servtab_t *sep)
 	} else {
 		dbg("new sep->se_fd:%d (!stream)\n", fd);
 	}
-
+	
 	add_fd_to_set(fd);
 	sep->se_fd = fd;
 }
@@ -604,6 +625,7 @@ static void free_servtab_strings(servtab_t *cp)
 {
 	int i;
 
+	free(cp->se_interface);
 	free(cp->se_local_hostname);
 	free(cp->se_service);
 	free(cp->se_proto);
@@ -630,6 +652,7 @@ static servtab_t *dup_servtab(servtab_t *sep)
 	newtab = new_servtab();
 	*newtab = *sep; /* struct copy */
 	/* deep-copying strings */
+	newtab->se_interface = xstrdup(newtab->se_interface);
 	newtab->se_service = xstrdup(newtab->se_service);
 	newtab->se_proto = xstrdup(newtab->se_proto);
 	newtab->se_user = xstrdup(newtab->se_user);
@@ -676,10 +699,10 @@ static servtab_t *parse_one_line(void)
 			free(default_local_hostname);
 			default_local_hostname = sep->se_local_hostname;
 			goto more;
-		}
+	}
 	} else
 		sep->se_local_hostname = xstrdup(default_local_hostname);
-
+	
 	/* service socktype proto wait user[:group] prog [args] */
 	sep->se_service = xstrdup(arg);
 
@@ -839,6 +862,13 @@ static servtab_t *parse_one_line(void)
 //		sep->se_local_hostname, sep->se_service, sep->se_proto, sep->se_wait, sep->se_proto_no,
 //		sep->se_max, sep->se_count, sep->se_time, sep->se_user, sep->se_group, sep->se_program);
 
+	/* check if the hostname specifier contains an interface */
+	if ((hostdelim = strrchr(sep->se_local_hostname, ':')) != NULL) {
+		sep->se_interface = sep->se_local_hostname;
+		*hostdelim++ = '\0';
+		sep->se_local_hostname = xstrdup(hostdelim);
+	}
+	
 	/* check if the hostname specifier is a comma separated list
 	 * of hostnames. we'll make new entries for each address. */
 	while ((hostdelim = strrchr(sep->se_local_hostname, ',')) != NULL) {
@@ -878,6 +908,8 @@ static servtab_t *insert_in_servlist(servtab_t *cp)
 
 static int same_serv_addr_proto(servtab_t *old, servtab_t *new)
 {
+	if (old->se_interface && ! new->se_interface || ! old->se_interface && new->se_interface || new->se_interface && strcmp(old->se_interface, new->se_interface) != 0)
+		return 0;
 	if (strcmp(old->se_local_hostname, new->se_local_hostname) != 0)
 		return 0;
 	if (strcmp(old->se_service, new->se_service) != 0)
@@ -1151,8 +1183,19 @@ int inetd_main(int argc UNUSED_PARAM, char **argv)
 	if (real_uid != 0) /* run by non-root user */
 		config_filename = NULL;
 
-	opt_complementary = "R+:q+"; /* -q N, -R N */
-	opt = getopt32(argv, "R:feq:", &max_concurrency, &global_queuelen);
+//usage:#define inetd_trivial_usage
+//usage:       "[-fe] [-q N] [-R N] [-i dev] [CONFFILE]"
+//usage:#define inetd_full_usage "\n\n"
+//usage:       "Listen for network connections and launch programs\n"
+//usage:     "\n	-f	Run in foreground"
+//usage:     "\n	-i dev	Device to bind it to"
+//usage:     "\n	-e	Log to stderr"
+//usage:     "\n	-q N	Socket listen queue (default: 128)"
+//usage:     "\n	-R N	Pause services after N connects/min"
+//usage:     "\n		(default: 0 - disabled)"
+	
+	opt_complementary = "R+:i:q+"; /* -q N, -R N */
+	opt = getopt32(argv, "R:feq:i:", &max_concurrency, &global_queuelen, &interface );
 	argv += optind;
 	//argc -= optind;
 	if (argv[0])
