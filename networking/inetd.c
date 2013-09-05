@@ -1183,17 +1183,6 @@ int inetd_main(int argc UNUSED_PARAM, char **argv)
 	if (real_uid != 0) /* run by non-root user */
 		config_filename = NULL;
 
-//usage:#define inetd_trivial_usage
-//usage:       "[-fe] [-q N] [-R N] [-i dev] [CONFFILE]"
-//usage:#define inetd_full_usage "\n\n"
-//usage:       "Listen for network connections and launch programs\n"
-//usage:     "\n	-f	Run in foreground"
-//usage:     "\n	-i dev	Device to bind it to"
-//usage:     "\n	-e	Log to stderr"
-//usage:     "\n	-q N	Socket listen queue (default: 128)"
-//usage:     "\n	-R N	Pause services after N connects/min"
-//usage:     "\n		(default: 0 - disabled)"
-	
 	opt_complementary = "R+:i:q+"; /* -q N, -R N */
 	opt = getopt32(argv, "R:feq:i:", &max_concurrency, &global_queuelen, &interface );
 	argv += optind;
