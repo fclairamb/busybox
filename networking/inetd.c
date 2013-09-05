@@ -540,7 +540,7 @@ static void prepare_socket_fd(servtab_t *sep)
 		//#include <linux/if.h>
 		//struct ifreq ifr = {};
 		//snprintf(ifr.ifr_name, sizeof(ifr.ifr_name), bind_to_device);
-		if ( setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, bind_to_device , strlen(bind_to_device)+1 ) ) {
+		if ( setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, bind_to_device , strlen(bind_to_device) ) ) {
 			printf( "%s:%s:%d : Could not set the %s interface for %s:%s\n", __FILE__, __FUNCTION__, __LINE__, bind_to_device, sep->se_local_hostname, sep->se_service);
 			perror("Error");
 		}
